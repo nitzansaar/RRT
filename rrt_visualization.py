@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, Slider
 import random
 import math
 from collections import deque
@@ -155,6 +155,211 @@ class RRT:
         return path
 
 
+class BiRRT:
+    """Bidirectional Rapidly-exploring Random Tree implementation"""
+    
+    def __init__(self, start, goal, bounds, obstacles=None, step_size=10, goal_threshold=15):
+        """
+        Initialize BiRRT with two trees
+        
+        Args:
+            start: (x, y) start position
+            goal: (x, y) goal position
+            bounds: (x_min, x_max, y_min, y_max) workspace bounds
+            obstacles: List of obstacles (each obstacle is a dict with 'center' and 'radius' or 'rect')
+            step_size: Maximum step size for tree expansion
+            goal_threshold: Distance threshold to consider trees connected
+        """
+        self.start = Node(start[0], start[1])
+        self.goal = Node(goal[0], goal[1])
+        self.bounds = bounds
+        self.obstacles = obstacles if obstacles else []
+        self.step_size = step_size
+        self.goal_threshold = goal_threshold
+        
+        # Two trees: one from start, one from goal
+        self.start_tree = [self.start]
+        self.goal_tree = [self.goal]
+        
+        self.trees_connected = False
+        self.connection_node_start = None  # Node in start tree that connects
+        self.connection_node_goal = None   # Node in goal tree that connects
+        
+    def distance(self, node1, node2):
+        """Calculate Euclidean distance between two nodes"""
+        return math.sqrt((node1.x - node2.x)**2 + (node1.y - node2.y)**2)
+    
+    def is_collision_free(self, node1, node2):
+        """Check if path between two nodes is collision-free"""
+        # Check multiple points along the path
+        num_checks = max(10, int(self.distance(node1, node2) / 2))
+        for i in range(num_checks + 1):
+            t = i / num_checks
+            x = node1.x + t * (node2.x - node1.x)
+            y = node1.y + t * (node2.y - node1.y)
+            
+            # Check bounds
+            if not (self.bounds[0] <= x <= self.bounds[1] and 
+                    self.bounds[2] <= y <= self.bounds[3]):
+                return False
+            
+            # Check obstacles
+            for obstacle in self.obstacles:
+                if 'radius' in obstacle:
+                    # Circular obstacle
+                    dist = math.sqrt((x - obstacle['center'][0])**2 + 
+                                    (y - obstacle['center'][1])**2)
+                    if dist < obstacle['radius']:
+                        return False
+                elif 'rect' in obstacle:
+                    # Rectangular obstacle
+                    rect = obstacle['rect']
+                    if (rect[0] <= x <= rect[0] + rect[2] and
+                        rect[1] <= y <= rect[1] + rect[3]):
+                        return False
+        
+        return True
+    
+    def nearest_node(self, random_point, tree):
+        """Find the nearest node to a random point in a given tree"""
+        min_dist = float('inf')
+        nearest = None
+        
+        for node in tree:
+            dist = math.sqrt((node.x - random_point[0])**2 + 
+                           (node.y - random_point[1])**2)
+            if dist < min_dist:
+                min_dist = dist
+                nearest = node
+        
+        return nearest
+    
+    def steer(self, from_node, to_point):
+        """Steer from a node towards a point with step_size constraint"""
+        dist = math.sqrt((from_node.x - to_point[0])**2 + 
+                        (from_node.y - to_point[1])**2)
+        
+        if dist <= self.step_size:
+            return Node(to_point[0], to_point[1])
+        else:
+            # Create new node at step_size distance
+            theta = math.atan2(to_point[1] - from_node.y, 
+                             to_point[0] - from_node.x)
+            new_x = from_node.x + self.step_size * math.cos(theta)
+            new_y = from_node.y + self.step_size * math.sin(theta)
+            return Node(new_x, new_y)
+    
+    def extend_tree(self, tree, random_point):
+        """Extend a tree towards a random point"""
+        # Find nearest node
+        nearest = self.nearest_node(random_point, tree)
+        
+        # Steer towards random point
+        new_node = self.steer(nearest, random_point)
+        
+        # Check if path is collision-free
+        if self.is_collision_free(nearest, new_node):
+            new_node.parent = nearest
+            new_node.cost = nearest.cost + self.distance(nearest, new_node)
+            tree.append(new_node)
+            return new_node
+        
+        return None
+    
+    def try_connect_trees(self, new_node, from_tree, to_tree):
+        """Try to connect a new node from one tree to the nearest node in another tree"""
+        nearest_in_other = self.nearest_node((new_node.x, new_node.y), to_tree)
+        dist = self.distance(new_node, nearest_in_other)
+        
+        if dist <= self.goal_threshold:
+            # Try to connect directly
+            if self.is_collision_free(new_node, nearest_in_other):
+                self.trees_connected = True
+                if from_tree == self.start_tree:
+                    self.connection_node_start = new_node
+                    self.connection_node_goal = nearest_in_other
+                else:
+                    self.connection_node_start = nearest_in_other
+                    self.connection_node_goal = new_node
+                return True
+        
+        return False
+    
+    def extend(self):
+        """Extend both trees by one step each (alternating)"""
+        # Random sample in workspace
+        random_point = (
+            random.uniform(self.bounds[0], self.bounds[1]),
+            random.uniform(self.bounds[2], self.bounds[3])
+        )
+        
+        # Alternate between extending start tree and goal tree
+        # Extend start tree
+        new_node_start = self.extend_tree(self.start_tree, random_point)
+        if new_node_start:
+            # Check if we can connect to goal tree
+            if self.try_connect_trees(new_node_start, self.start_tree, self.goal_tree):
+                return True
+        
+        # Try extending goal tree towards the new node from start tree (if it was created)
+        if new_node_start:
+            new_node_goal = self.extend_tree(self.goal_tree, (new_node_start.x, new_node_start.y))
+            if new_node_goal:
+                if self.try_connect_trees(new_node_goal, self.goal_tree, self.start_tree):
+                    return True
+        
+        # Also try extending goal tree with a new random point
+        random_point2 = (
+            random.uniform(self.bounds[0], self.bounds[1]),
+            random.uniform(self.bounds[2], self.bounds[3])
+        )
+        new_node_goal = self.extend_tree(self.goal_tree, random_point2)
+        if new_node_goal:
+            if self.try_connect_trees(new_node_goal, self.goal_tree, self.start_tree):
+                return True
+        
+        return new_node_start is not None or new_node_goal is not None
+    
+    def get_path(self):
+        """Retrieve the path from start to goal by merging both trees"""
+        if not self.trees_connected:
+            return None
+        
+        # Build path from start to connection point
+        path_start = []
+        current = self.connection_node_start
+        while current is not None:
+            path_start.append((current.x, current.y))
+            current = current.parent
+        
+        path_start.reverse()
+        
+        # Build path from connection point to goal
+        path_goal = []
+        current = self.connection_node_goal
+        while current is not None:
+            path_goal.append((current.x, current.y))
+            current = current.parent
+        
+        # Merge paths (path_start ends at connection, path_goal starts at connection)
+        # Remove duplicate connection point
+        if path_goal:
+            path_goal = path_goal[1:]  # Remove first point (connection point)
+        
+        full_path = path_start + path_goal
+        return full_path
+    
+    @property
+    def goal_reached(self):
+        """Property to check if goal is reached (trees are connected)"""
+        return self.trees_connected
+    
+    @property
+    def nodes(self):
+        """Property to get all nodes from both trees"""
+        return self.start_tree + self.goal_tree
+
+
 class RRTVisualizer:
     """Visualization class for RRT"""
     
@@ -165,6 +370,9 @@ class RRTVisualizer:
         self.obstacles = obstacles if obstacles else []
         self.step_size = step_size
         self.goal_threshold = goal_threshold
+        
+        # Bidirectional mode flag
+        self.bidirectional_mode = False
         
         # Will be initialized after goal selection
         self.rrt = None
@@ -208,7 +416,17 @@ class RRTVisualizer:
         
         # Reset button
         self.reset_button = None
+        self.toggle_button = None
+        self.speed_slider = None
         self.running = False
+        
+        # Animation speed (pause duration in seconds)
+        # Lower value = faster animation, higher value = slower animation
+        self.animation_delay = 0.001  # Default: fast
+        
+        # Track nodes for bidirectional visualization
+        self.last_start_tree_count = 1
+        self.last_goal_tree_count = 1
         
     def draw_obstacles(self):
         """Draw obstacles on the plot"""
@@ -232,6 +450,8 @@ class RRTVisualizer:
         self.rrt = None
         self.goal_selected = False
         self.last_node_count = 1
+        self.last_start_tree_count = 1
+        self.last_goal_tree_count = 1
         
         # Remove goal point
         if self.goal_point:
@@ -249,7 +469,8 @@ class RRTVisualizer:
             self.iter_text = None
         
         # Reset title
-        self.ax.set_title('RRT Path Planning Visualization - Click to set goal', fontsize=16, fontweight='bold')
+        mode_text = 'BiRRT' if self.bidirectional_mode else 'RRT'
+        self.ax.set_title(f'{mode_text} Path Planning Visualization - Click to set goal', fontsize=16, fontweight='bold')
         
         # Reset goal selection flag
         self.goal_selected = False
@@ -290,6 +511,53 @@ class RRTVisualizer:
         
         self.reset_button.on_clicked(reset_callback)
     
+    def setup_toggle_button(self):
+        """Create and setup the bidirectional toggle button"""
+        # Create button axes (position: left, bottom, width, height in figure coordinates)
+        ax_toggle = plt.axes([0.13, 0.02, 0.18, 0.04])
+        self.toggle_button = Button(ax_toggle, 'Mode: Unidirectional', color='lightblue', hovercolor='lightcyan')
+        
+        def toggle_callback(event):
+            if not self.running:
+                self.bidirectional_mode = not self.bidirectional_mode
+                mode_text = 'Bidirectional' if self.bidirectional_mode else 'Unidirectional'
+                self.toggle_button.label.set_text(f'Mode: {mode_text}')
+                print(f"\nMode switched to: {mode_text}")
+                if self.rrt is not None:
+                    print("Note: Mode change will take effect on next reset.")
+        
+        self.toggle_button.on_clicked(toggle_callback)
+    
+    def setup_speed_slider(self):
+        """Create and setup the speed control slider"""
+        # Create slider axes (position: left, bottom, width, height in figure coordinates)
+        # Positioned further right to avoid overlap with mode toggle button
+        ax_slider = plt.axes([0.36, 0.02, 0.25, 0.03])
+        
+        # Slider range: 0 (slow) to 1 (fast)
+        # We'll map this inversely to pause duration: 0 = 0.1s pause, 1 = 0.0001s pause
+        self.speed_slider = Slider(
+            ax_slider,
+            'Speed',
+            0.0,  # min (slow)
+            1.0,  # max (fast)
+            valinit=0.9,  # Default: fast (maps to ~0.001s pause)
+            valstep=0.01,
+            color='lightgreen'
+        )
+        
+        def update_speed(val):
+            # Map slider value (0-1) to pause duration
+            # 0 (slow) -> 0.1 seconds, 1 (fast) -> 0.0001 seconds
+            # Using exponential mapping for smoother control
+            slider_val = self.speed_slider.val
+            # Inverse mapping: low slider value = high delay (slow), high slider value = low delay (fast)
+            self.animation_delay = 0.1 * (1.0 - slider_val) ** 2 + 0.0001
+        
+        self.speed_slider.on_changed(update_speed)
+        # Initialize the delay based on default slider value
+        update_speed(0.9)
+    
     def setup_goal_click_handler(self):
         """Setup click handler for goal selection"""
         # Disconnect any existing click handler
@@ -319,17 +587,26 @@ class RRTVisualizer:
             self.ax.legend(loc='upper right')
             
             # Update title
-            self.ax.set_title('RRT Path Planning Visualization', fontsize=16, fontweight='bold')
+            mode_text = 'BiRRT' if self.bidirectional_mode else 'RRT'
+            self.ax.set_title(f'{mode_text} Path Planning Visualization', fontsize=16, fontweight='bold')
             
-            # Initialize RRT with selected goal
-            self.rrt = RRT(self.start_pos, self.goal_pos, self.bounds, 
-                          self.obstacles, self.step_size, self.goal_threshold)
+            # Initialize RRT or BiRRT based on mode
+            if self.bidirectional_mode:
+                self.rrt = BiRRT(self.start_pos, self.goal_pos, self.bounds, 
+                                self.obstacles, self.step_size, self.goal_threshold)
+                self.last_start_tree_count = 1
+                self.last_goal_tree_count = 1
+            else:
+                self.rrt = RRT(self.start_pos, self.goal_pos, self.bounds, 
+                              self.obstacles, self.step_size, self.goal_threshold)
+                self.last_node_count = 1
             
             self.goal_selected = True
             self.fig.canvas.draw()
             
             print(f"Goal set at ({x:.2f}, {y:.2f})")
-            print("Starting RRT algorithm...")
+            algo_name = 'BiRRT' if self.bidirectional_mode else 'RRT'
+            print(f"Starting {algo_name} algorithm...")
             
             # Disconnect click handler
             self.fig.canvas.mpl_disconnect(self.click_handler)
@@ -390,15 +667,35 @@ class RRTVisualizer:
             # Update visualization in real-time
             if animate:
                 # Incrementally add new nodes and edges
-                if added and len(self.rrt.nodes) > self.last_node_count:
-                    self.add_new_nodes()
-                    self.last_node_count = len(self.rrt.nodes)
+                if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+                    # Handle bidirectional mode
+                    if added:
+                        if len(self.rrt.start_tree) > self.last_start_tree_count:
+                            self.add_new_nodes_bidirectional('start')
+                            self.last_start_tree_count = len(self.rrt.start_tree)
+                        if len(self.rrt.goal_tree) > self.last_goal_tree_count:
+                            self.add_new_nodes_bidirectional('goal')
+                            self.last_goal_tree_count = len(self.rrt.goal_tree)
+                    
+                    # Update iteration counter
+                    total_nodes = len(self.rrt.start_tree) + len(self.rrt.goal_tree)
+                    self.iter_text.set_text(
+                        f'Iterations: {iterations}\n'
+                        f'Start Tree: {len(self.rrt.start_tree)}\n'
+                        f'Goal Tree: {len(self.rrt.goal_tree)}\n'
+                        f'Total Nodes: {total_nodes}'
+                    )
+                else:
+                    # Handle unidirectional mode
+                    if added and len(self.rrt.nodes) > self.last_node_count:
+                        self.add_new_nodes()
+                        self.last_node_count = len(self.rrt.nodes)
+                    
+                    # Update iteration counter
+                    self.iter_text.set_text(f'Iterations: {iterations}\nNodes: {len(self.rrt.nodes)}')
                 
-                # Update iteration counter
-                self.iter_text.set_text(f'Iterations: {iterations}\nNodes: {len(self.rrt.nodes)}')
-                
-                # Small pause for smooth animation
-                plt.pause(0.001)  # Very short pause for real-time feel
+                # Small pause for smooth animation (controlled by speed slider)
+                plt.pause(self.animation_delay)
         
         # Final update - draw everything
         self.draw_tree_complete()
@@ -418,21 +715,46 @@ class RRTVisualizer:
                 self.ax.legend(loc='upper right')
                 
                 # Update final stats
-                self.iter_text.set_text(
-                    f'✓ Goal reached!\nIterations: {iterations}\n'
-                    f'Nodes: {len(self.rrt.nodes)}\n'
-                    f'Path length: {self.rrt.goal.cost:.2f}'
-                )
-                
-                print(f"\n✓ Goal reached in {iterations} iterations!")
-                print(f"✓ Path length: {self.rrt.goal.cost:.2f}")
-                print(f"✓ Path has {len(path)} waypoints")
+                if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+                    total_nodes = len(self.rrt.start_tree) + len(self.rrt.goal_tree)
+                    path_length = sum(
+                        math.sqrt((path[i+1][0] - path[i][0])**2 + (path[i+1][1] - path[i][1])**2)
+                        for i in range(len(path) - 1)
+                    )
+                    self.iter_text.set_text(
+                        f'✓ Goal reached!\nIterations: {iterations}\n'
+                        f'Start Tree: {len(self.rrt.start_tree)}\n'
+                        f'Goal Tree: {len(self.rrt.goal_tree)}\n'
+                        f'Total Nodes: {total_nodes}\n'
+                        f'Path length: {path_length:.2f}'
+                    )
+                    print(f"\n✓ Goal reached in {iterations} iterations!")
+                    print(f"✓ Path length: {path_length:.2f}")
+                    print(f"✓ Path has {len(path)} waypoints")
+                else:
+                    self.iter_text.set_text(
+                        f'✓ Goal reached!\nIterations: {iterations}\n'
+                        f'Nodes: {len(self.rrt.nodes)}\n'
+                        f'Path length: {self.rrt.goal.cost:.2f}'
+                    )
+                    print(f"\n✓ Goal reached in {iterations} iterations!")
+                    print(f"✓ Path length: {self.rrt.goal.cost:.2f}")
+                    print(f"✓ Path has {len(path)} waypoints")
             else:
                 print("✗ Goal reached but path not found")
         else:
-            self.iter_text.set_text(
-                f'✗ Goal not reached\nIterations: {iterations}\nNodes: {len(self.rrt.nodes)}'
-            )
+            if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+                total_nodes = len(self.rrt.start_tree) + len(self.rrt.goal_tree)
+                self.iter_text.set_text(
+                    f'✗ Goal not reached\nIterations: {iterations}\n'
+                    f'Start Tree: {len(self.rrt.start_tree)}\n'
+                    f'Goal Tree: {len(self.rrt.goal_tree)}\n'
+                    f'Total Nodes: {total_nodes}'
+                )
+            else:
+                self.iter_text.set_text(
+                    f'✗ Goal not reached\nIterations: {iterations}\nNodes: {len(self.rrt.nodes)}'
+                )
             print(f"\n✗ Goal not reached after {iterations} iterations")
             print("Try increasing max_iterations or adjusting parameters")
         
@@ -441,7 +763,7 @@ class RRTVisualizer:
         return self.rrt.goal_reached
     
     def add_new_nodes(self):
-        """Incrementally add new nodes and edges to the visualization"""
+        """Incrementally add new nodes and edges to the visualization (unidirectional)"""
         # Only process nodes that haven't been drawn yet
         for i in range(self.last_node_count, len(self.rrt.nodes)):
             node = self.rrt.nodes[i]
@@ -457,6 +779,37 @@ class RRTVisualizer:
             point, = self.ax.plot(node.x, node.y, 'ko', markersize=2, zorder=2)
             self.node_points.append(point)
     
+    def add_new_nodes_bidirectional(self, tree_type):
+        """Incrementally add new nodes and edges for bidirectional visualization"""
+        if not isinstance(self.rrt, BiRRT):
+            return
+        
+        tree = self.rrt.start_tree if tree_type == 'start' else self.rrt.goal_tree
+        last_count = self.last_start_tree_count if tree_type == 'start' else self.last_goal_tree_count
+        
+        # Color coding: start tree = blue/green tint, goal tree = red/orange tint
+        if tree_type == 'start':
+            edge_color = 'steelblue'
+            node_color = 'darkblue'
+        else:
+            edge_color = 'coral'
+            node_color = 'darkred'
+        
+        # Only process nodes that haven't been drawn yet
+        for i in range(last_count, len(tree)):
+            node = tree[i]
+            
+            # Draw edge to parent
+            if node.parent is not None:
+                line, = self.ax.plot([node.parent.x, node.x], 
+                                   [node.parent.y, node.y],
+                                   edge_color, linewidth=0.5, alpha=0.6, zorder=1)
+                self.tree_lines[node] = line
+            
+            # Draw node point
+            point, = self.ax.plot(node.x, node.y, node_color, marker='o', markersize=2, zorder=2)
+            self.node_points.append(point)
+    
     def draw_tree_complete(self):
         """Draw the complete tree (used for final rendering)"""
         # Clear existing lines
@@ -468,18 +821,39 @@ class RRTVisualizer:
         self.tree_lines.clear()
         self.node_points.clear()
         
-        # Draw all edges in the tree
-        for node in self.rrt.nodes:
-            if node.parent is not None:
-                line, = self.ax.plot([node.parent.x, node.x], 
-                                   [node.parent.y, node.y],
-                                   'gray', linewidth=0.5, alpha=0.6, zorder=1)
-                self.tree_lines[node] = line
-        
-        # Draw all nodes
-        for node in self.rrt.nodes:
-            point, = self.ax.plot(node.x, node.y, 'ko', markersize=2, zorder=2)
-            self.node_points.append(point)
+        if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+            # Draw start tree (blue)
+            for node in self.rrt.start_tree:
+                if node.parent is not None:
+                    line, = self.ax.plot([node.parent.x, node.x], 
+                                       [node.parent.y, node.y],
+                                       'steelblue', linewidth=0.5, alpha=0.6, zorder=1)
+                    self.tree_lines[node] = line
+                point, = self.ax.plot(node.x, node.y, 'darkblue', marker='o', markersize=2, zorder=2)
+                self.node_points.append(point)
+            
+            # Draw goal tree (red/orange)
+            for node in self.rrt.goal_tree:
+                if node.parent is not None:
+                    line, = self.ax.plot([node.parent.x, node.x], 
+                                       [node.parent.y, node.y],
+                                       'coral', linewidth=0.5, alpha=0.6, zorder=1)
+                    self.tree_lines[node] = line
+                point, = self.ax.plot(node.x, node.y, 'darkred', marker='o', markersize=2, zorder=2)
+                self.node_points.append(point)
+        else:
+            # Draw all edges in the tree (unidirectional)
+            for node in self.rrt.nodes:
+                if node.parent is not None:
+                    line, = self.ax.plot([node.parent.x, node.x], 
+                                       [node.parent.y, node.y],
+                                       'gray', linewidth=0.5, alpha=0.6, zorder=1)
+                    self.tree_lines[node] = line
+            
+            # Draw all nodes
+            for node in self.rrt.nodes:
+                point, = self.ax.plot(node.x, node.y, 'ko', markersize=2, zorder=2)
+                self.node_points.append(point)
 
 
 def main():
@@ -511,8 +885,10 @@ def main():
         goal_threshold=10
     )
     
-    # Setup reset button
+    # Setup reset button, toggle button, and speed slider
     visualizer.setup_reset_button()
+    visualizer.setup_toggle_button()
+    visualizer.setup_speed_slider()
     
     # Wait for user to click and set the goal
     visualizer.wait_for_goal_selection()
