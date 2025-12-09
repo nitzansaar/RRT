@@ -46,6 +46,10 @@ You can customize the following parameters in `main()`:
 ## Example Obstacle Definitions
 
 ```python
+
+https://github.com/user-attachments/assets/c158b77d-04f8-4e26-8675-c876efed3cdf
+
+
 # Circular obstacle
 {'center': (x, y), 'radius': r}
 
