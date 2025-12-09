@@ -155,6 +155,121 @@ class RRT:
         return path
 
 
+class RRTStar(RRT):
+    """RRT* implementation with optimal rewiring"""
+    
+    def __init__(self, start, goal, bounds, obstacles=None, step_size=10, goal_threshold=15, rewire_radius=None):
+        """
+        Initialize RRT*
+        
+        Args:
+            start: (x, y) start position
+            goal: (x, y) goal position
+            bounds: (x_min, x_max, y_min, y_max) workspace bounds
+            obstacles: List of obstacles
+            step_size: Maximum step size for tree expansion
+            goal_threshold: Distance threshold to consider goal reached
+            rewire_radius: Radius for finding nearby nodes (if None, uses adaptive radius)
+        """
+        super().__init__(start, goal, bounds, obstacles, step_size, goal_threshold)
+        self.rewire_radius = rewire_radius if rewire_radius else step_size * 2.0  # Default radius
+    
+    def get_nearby_nodes(self, point, radius):
+        """Find all nodes within radius of a point"""
+        nearby = []
+        px, py = point[0], point[1]
+        for node in self.nodes:
+            dist = math.sqrt((node.x - px)**2 + (node.y - py)**2)
+            if dist <= radius:
+                nearby.append(node)
+        return nearby
+    
+    def choose_best_parent(self, new_node, nearby_nodes):
+        """Choose the best parent from nearby nodes that minimizes cost"""
+        best_parent = None
+        best_cost = float('inf')
+        
+        for node in nearby_nodes:
+            if self.is_collision_free(node, new_node):
+                cost = node.cost + self.distance(node, new_node)
+                if cost < best_cost:
+                    best_cost = cost
+                    best_parent = node
+        
+        return best_parent, best_cost
+    
+    def rewire(self, new_node, nearby_nodes):
+        """Rewire nearby nodes if connecting through new_node improves their cost"""
+        for node in nearby_nodes:
+            if node == new_node.parent:  # Skip the parent
+                continue
+            
+            # Check if connecting node through new_node would improve cost
+            new_cost = new_node.cost + self.distance(new_node, node)
+            if new_cost < node.cost:
+                # Check if path is collision-free
+                if self.is_collision_free(new_node, node):
+                    # Rewire: change parent
+                    node.parent = new_node
+                    # Update cost and propagate cost change to children
+                    old_cost = node.cost
+                    node.cost = new_cost
+                    cost_diff = new_cost - old_cost
+                    self.update_children_cost(node, cost_diff)
+    
+    def update_children_cost(self, node, cost_diff):
+        """Recursively update cost of all children after rewiring"""
+        for child in self.nodes:
+            if child.parent == node:
+                child.cost += cost_diff
+                self.update_children_cost(child, cost_diff)
+    
+    def extend(self):
+        """Extend the tree by one step with RRT* rewiring"""
+        # Random sample in workspace
+        random_point = (
+            random.uniform(self.bounds[0], self.bounds[1]),
+            random.uniform(self.bounds[2], self.bounds[3])
+        )
+        
+        # Find nearest node
+        nearest = self.nearest_node(random_point)
+        
+        # Steer towards random point
+        new_node = self.steer(nearest, random_point)
+        
+        # Check if path is collision-free
+        if self.is_collision_free(nearest, new_node):
+            # Find nearby nodes within rewire radius
+            nearby_nodes = self.get_nearby_nodes((new_node.x, new_node.y), self.rewire_radius)
+            
+            # Choose best parent from nearby nodes
+            best_parent, best_cost = self.choose_best_parent(new_node, nearby_nodes)
+            
+            if best_parent is not None:
+                new_node.parent = best_parent
+                new_node.cost = best_cost
+                self.nodes.append(new_node)
+                
+                # Rewire nearby nodes
+                self.rewire(new_node, nearby_nodes)
+                
+                # Check if goal is reached
+                dist_to_goal = self.distance(new_node, self.goal)
+                if dist_to_goal <= self.goal_threshold and not self.goal_reached:
+                    # Try to connect to goal
+                    if self.is_collision_free(new_node, self.goal):
+                        self.goal.parent = new_node
+                        self.goal.cost = new_node.cost + dist_to_goal
+                        self.goal_reached = True
+                        self.goal_node = new_node
+                        return True
+                
+                return True
+        
+        return False
+
+
 class BiRRT:
     """Bidirectional Rapidly-exploring Random Tree implementation"""
     
@@ -371,8 +486,8 @@ class RRTVisualizer:
         self.step_size = step_size
         self.goal_threshold = goal_threshold
         
-        # Bidirectional mode flag
-        self.bidirectional_mode = False
+        # Algorithm mode: 'unidirectional', 'bidirectional', or 'rrt_star'
+        self.algorithm_mode = 'unidirectional'
         
         # Will be initialized after goal selection
         self.rrt = None
@@ -469,7 +584,8 @@ class RRTVisualizer:
             self.iter_text = None
         
         # Reset title
-        mode_text = 'BiRRT' if self.bidirectional_mode else 'RRT'
+        mode_display = {'unidirectional': 'RRT', 'bidirectional': 'BiRRT', 'rrt_star': 'RRT*'}
+        mode_text = mode_display.get(self.algorithm_mode, 'RRT')
         self.ax.set_title(f'{mode_text} Path Planning Visualization - Click to set goal', fontsize=16, fontweight='bold')
         
         # Reset goal selection flag
@@ -512,15 +628,21 @@ class RRTVisualizer:
         self.reset_button.on_clicked(reset_callback)
     
     def setup_toggle_button(self):
-        """Create and setup the bidirectional toggle button"""
+        """Create and setup the algorithm mode toggle button"""
         # Create button axes (position: left, bottom, width, height in figure coordinates)
-        ax_toggle = plt.axes([0.13, 0.02, 0.18, 0.04])
-        self.toggle_button = Button(ax_toggle, 'Mode: Unidirectional', color='lightblue', hovercolor='lightcyan')
+        ax_toggle = plt.axes([0.13, 0.02, 0.20, 0.04])
+        mode_display = {'unidirectional': 'Unidirectional', 'bidirectional': 'Bidirectional', 'rrt_star': 'RRT*'}
+        self.toggle_button = Button(ax_toggle, f'Mode: {mode_display[self.algorithm_mode]}', color='lightblue', hovercolor='lightcyan')
         
         def toggle_callback(event):
             if not self.running:
-                self.bidirectional_mode = not self.bidirectional_mode
-                mode_text = 'Bidirectional' if self.bidirectional_mode else 'Unidirectional'
+                # Cycle through modes: unidirectional -> bidirectional -> rrt_star -> unidirectional
+                mode_order = ['unidirectional', 'bidirectional', 'rrt_star']
+                current_index = mode_order.index(self.algorithm_mode)
+                next_index = (current_index + 1) % len(mode_order)
+                self.algorithm_mode = mode_order[next_index]
+                
+                mode_text = mode_display[self.algorithm_mode]
                 self.toggle_button.label.set_text(f'Mode: {mode_text}')
                 print(f"\nMode switched to: {mode_text}")
                 if self.rrt is not None:
@@ -587,16 +709,21 @@ class RRTVisualizer:
             self.ax.legend(loc='upper right')
             
             # Update title
-            mode_text = 'BiRRT' if self.bidirectional_mode else 'RRT'
+            mode_display = {'unidirectional': 'RRT', 'bidirectional': 'BiRRT', 'rrt_star': 'RRT*'}
+            mode_text = mode_display.get(self.algorithm_mode, 'RRT')
             self.ax.set_title(f'{mode_text} Path Planning Visualization', fontsize=16, fontweight='bold')
             
-            # Initialize RRT or BiRRT based on mode
-            if self.bidirectional_mode:
+            # Initialize algorithm based on mode
+            if self.algorithm_mode == 'bidirectional':
                 self.rrt = BiRRT(self.start_pos, self.goal_pos, self.bounds, 
                                 self.obstacles, self.step_size, self.goal_threshold)
                 self.last_start_tree_count = 1
                 self.last_goal_tree_count = 1
-            else:
+            elif self.algorithm_mode == 'rrt_star':
+                self.rrt = RRTStar(self.start_pos, self.goal_pos, self.bounds, 
+                                   self.obstacles, self.step_size, self.goal_threshold)
+                self.last_node_count = 1
+            else:  # unidirectional
                 self.rrt = RRT(self.start_pos, self.goal_pos, self.bounds, 
                               self.obstacles, self.step_size, self.goal_threshold)
                 self.last_node_count = 1
@@ -605,7 +732,8 @@ class RRTVisualizer:
             self.fig.canvas.draw()
             
             print(f"Goal set at ({x:.2f}, {y:.2f})")
-            algo_name = 'BiRRT' if self.bidirectional_mode else 'RRT'
+            mode_display = {'unidirectional': 'RRT', 'bidirectional': 'BiRRT', 'rrt_star': 'RRT*'}
+            algo_name = mode_display.get(self.algorithm_mode, 'RRT')
             print(f"Starting {algo_name} algorithm...")
             
             # Disconnect click handler
@@ -667,7 +795,7 @@ class RRTVisualizer:
             # Update visualization in real-time
             if animate:
                 # Incrementally add new nodes and edges
-                if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+                if self.algorithm_mode == 'bidirectional' and isinstance(self.rrt, BiRRT):
                     # Handle bidirectional mode
                     if added:
                         if len(self.rrt.start_tree) > self.last_start_tree_count:
@@ -686,7 +814,7 @@ class RRTVisualizer:
                         f'Total Nodes: {total_nodes}'
                     )
                 else:
-                    # Handle unidirectional mode
+                    # Handle unidirectional mode (RRT or RRT*)
                     if added and len(self.rrt.nodes) > self.last_node_count:
                         self.add_new_nodes()
                         self.last_node_count = len(self.rrt.nodes)
@@ -715,7 +843,7 @@ class RRTVisualizer:
                 self.ax.legend(loc='upper right')
                 
                 # Update final stats
-                if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+                if self.algorithm_mode == 'bidirectional' and isinstance(self.rrt, BiRRT):
                     total_nodes = len(self.rrt.start_tree) + len(self.rrt.goal_tree)
                     path_length = sum(
                         math.sqrt((path[i+1][0] - path[i][0])**2 + (path[i+1][1] - path[i][1])**2)
@@ -732,18 +860,23 @@ class RRTVisualizer:
                     print(f"✓ Path length: {path_length:.2f}")
                     print(f"✓ Path has {len(path)} waypoints")
                 else:
+                    # RRT or RRT*
+                    path_length = self.rrt.goal.cost if hasattr(self.rrt.goal, 'cost') else sum(
+                        math.sqrt((path[i+1][0] - path[i][0])**2 + (path[i+1][1] - path[i][1])**2)
+                        for i in range(len(path) - 1)
+                    )
                     self.iter_text.set_text(
                         f'✓ Goal reached!\nIterations: {iterations}\n'
                         f'Nodes: {len(self.rrt.nodes)}\n'
-                        f'Path length: {self.rrt.goal.cost:.2f}'
+                        f'Path length: {path_length:.2f}'
                     )
                     print(f"\n✓ Goal reached in {iterations} iterations!")
-                    print(f"✓ Path length: {self.rrt.goal.cost:.2f}")
+                    print(f"✓ Path length: {path_length:.2f}")
                     print(f"✓ Path has {len(path)} waypoints")
             else:
                 print("✗ Goal reached but path not found")
         else:
-            if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+            if self.algorithm_mode == 'bidirectional' and isinstance(self.rrt, BiRRT):
                 total_nodes = len(self.rrt.start_tree) + len(self.rrt.goal_tree)
                 self.iter_text.set_text(
                     f'✗ Goal not reached\nIterations: {iterations}\n'
@@ -821,7 +954,7 @@ class RRTVisualizer:
         self.tree_lines.clear()
         self.node_points.clear()
         
-        if self.bidirectional_mode and isinstance(self.rrt, BiRRT):
+        if self.algorithm_mode == 'bidirectional' and isinstance(self.rrt, BiRRT):
             # Draw start tree (blue)
             for node in self.rrt.start_tree:
                 if node.parent is not None:
