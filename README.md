@@ -2,6 +2,11 @@
 
 A Python implementation of the RRT path planning algorithm with real-time visualization.
 
+
+https://github.com/user-attachments/assets/c8ed1382-fc40-4ed7-8092-7aeb137087ef
+
+
+
 ## Features
 
 - **Interactive GUI**: Visualizes the RRT tree as it grows in real-time
@@ -46,6 +51,8 @@ You can customize the following parameters in `main()`:
 ## Example Obstacle Definitions
 
 ```python
+
+
 # Circular obstacle
 {'center': (x, y), 'radius': r}
 
