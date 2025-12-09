@@ -1,18 +1,17 @@
-# RRT (Rapidly-exploring Random Tree) Visualization
+# RRT Path Planning Visualization
 
-A Python implementation of the RRT path planning algorithm with real-time visualization.
-
+A Python implementation of RRT path planning algorithms with real-time visualization. Supports multiple algorithm variants including standard RRT, bidirectional RRT (BiRRT), and RRT* with optimal rewiring.
 
 https://github.com/user-attachments/assets/c8ed1382-fc40-4ed7-8092-7aeb137087ef
 
-
-
 ## Features
 
-- **Interactive GUI**: Visualizes the RRT tree as it grows in real-time
-- **Path Planning**: Finds a collision-free path from start to goal
+- **Multiple Algorithms**: RRT, Bidirectional RRT (BiRRT), and RRT* with rewiring
+- **Interactive GUI**: Real-time visualization of tree growth
+- **Interactive Controls**: Mode toggle, speed slider, and reset button
+- **Path Planning**: Finds collision-free paths from start to goal
 - **Obstacle Avoidance**: Supports circular and rectangular obstacles
-- **Path Highlighting**: Automatically highlights the shortest path once the goal is reached
+- **Path Highlighting**: Automatically highlights the optimal path once the goal is reached
 
 ## Installation
 
@@ -28,31 +27,48 @@ Run the visualization:
 python rrt_visualization.py
 ```
 
+### Interactive Controls
+
+- **Click on plot**: Set the goal position
+- **Mode button**: Toggle between Unidirectional RRT, Bidirectional RRT, and RRT*
+- **Speed slider**: Adjust animation speed (left = slower, right = faster)
+- **Reset button**: Clear current tree and set a new goal
+
+## Algorithms
+
+### RRT (Unidirectional)
+Standard RRT algorithm that grows a single tree from the start position toward the goal.
+
+### BiRRT (Bidirectional)
+Grows two trees simultaneously - one from the start and one from the goal. Trees merge when they connect, typically finding paths faster than unidirectional RRT.
+
+### RRT*
+An optimized version of RRT that performs rewiring to improve path quality. When adding new nodes, RRT* finds nearby nodes and rewires them if connecting through the new node reduces their path cost, resulting in shorter paths over time.
+
 ## How It Works
 
-1. **Tree Growth**: The algorithm starts from the start position and randomly samples points in the workspace
-2. **Nearest Node**: For each random sample, it finds the nearest existing node in the tree
-3. **Steering**: It creates a new node by steering from the nearest node towards the random sample (with a maximum step size)
-4. **Collision Checking**: Before adding a new node, it checks if the path is collision-free
-5. **Goal Connection**: When a node gets close enough to the goal, it attempts to connect directly to the goal
-6. **Path Extraction**: Once the goal is reached, it backtracks from the goal to the start to find the path
+1. **Tree Growth**: Algorithm randomly samples points in the workspace
+2. **Nearest Node**: Finds the nearest existing node to each random sample
+3. **Steering**: Creates a new node by steering from nearest node toward the sample (with maximum step size)
+4. **Collision Checking**: Verifies the path is collision-free before adding nodes
+5. **Rewiring (RRT*)**: Optimizes paths by rewiring nearby nodes if it improves their cost
+6. **Goal Connection**: Connects to goal when within threshold distance
+7. **Path Extraction**: Backtracks from goal to start to extract the final path
 
 ## Customization
 
 You can customize the following parameters in `main()`:
 
 - **Bounds**: Workspace boundaries `(x_min, x_max, y_min, y_max)`
-- **Start/Goal**: Start and goal positions `(x, y)`
+- **Start**: Start position `(x, y)`
+- **Goal**: Set interactively by clicking on the plot
 - **Obstacles**: List of obstacles (circular or rectangular)
 - **Step Size**: Maximum distance for tree expansion
 - **Goal Threshold**: Distance threshold to consider goal reached
-- **Max Iterations**: Maximum number of iterations before giving up
 
-## Example Obstacle Definitions
+### Example Obstacle Definitions
 
 ```python
-
-
 # Circular obstacle
 {'center': (x, y), 'radius': r}
 
@@ -62,7 +78,7 @@ You can customize the following parameters in `main()`:
 
 ## Algorithm Parameters
 
-- **step_size**: Controls how far the tree extends in each step (smaller = more precise but slower)
+- **step_size**: Maximum distance for tree expansion per iteration (smaller = more precise but slower)
 - **goal_threshold**: Distance from goal to consider it reached (smaller = more precise connection)
-- **max_iterations**: Maximum number of tree extensions before stopping
+- **rewire_radius** (RRT*): Radius for finding nearby nodes to rewire (default: 2 × step_size)
 
