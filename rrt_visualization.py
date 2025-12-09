@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
+from matplotlib.widgets import Button
 import random
 import math
 from collections import deque
@@ -158,9 +159,15 @@ class RRTVisualizer:
     """Visualization class for RRT"""
     
     def __init__(self, start, goal, bounds, obstacles=None, step_size=10, goal_threshold=15):
-        self.rrt = RRT(start, goal, bounds, obstacles, step_size, goal_threshold)
+        self.start_pos = start
+        self.goal_pos = goal
         self.bounds = bounds
         self.obstacles = obstacles if obstacles else []
+        self.step_size = step_size
+        self.goal_threshold = goal_threshold
+        
+        # Will be initialized after goal selection
+        self.rrt = None
         
         # Enable interactive mode for real-time updates
         plt.ion()
@@ -171,16 +178,18 @@ class RRTVisualizer:
         self.ax.set_ylim(bounds[2] - 10, bounds[3] + 10)
         self.ax.set_aspect('equal')
         self.ax.grid(True, alpha=0.3)
-        self.ax.set_title('RRT Path Planning Visualization', fontsize=16, fontweight='bold')
+        self.ax.set_title('RRT Path Planning Visualization - Click to set goal', fontsize=16, fontweight='bold')
         self.ax.set_xlabel('X', fontsize=12)
         self.ax.set_ylabel('Y', fontsize=12)
         
         # Draw obstacles
         self.draw_obstacles()
         
-        # Draw start and goal
-        self.ax.plot(start[0], start[1], 'go', markersize=15, label='Start', zorder=5)
-        self.ax.plot(goal[0], goal[1], 'ro', markersize=15, label='Goal', zorder=5)
+        # Draw start
+        self.start_point, = self.ax.plot(start[0], start[1], 'go', markersize=15, label='Start', zorder=5)
+        
+        # Goal will be drawn after selection
+        self.goal_point = None
         
         self.ax.legend(loc='upper right')
         
@@ -192,6 +201,14 @@ class RRTVisualizer:
         
         # Track last node count for incremental updates
         self.last_node_count = 1  # Start with 1 (the start node)
+        
+        # For interactive goal selection
+        self.goal_selected = False
+        self.click_handler = None
+        
+        # Reset button
+        self.reset_button = None
+        self.running = False
         
     def draw_obstacles(self):
         """Draw obstacles on the plot"""
@@ -206,8 +223,155 @@ class RRTVisualizer:
                                    color='black', alpha=0.6)
                 self.ax.add_patch(rectangle)
     
+    def reset(self):
+        """Reset the visualization to allow selecting a new goal and running again"""
+        # Clear the tree
+        self.clear_tree()
+        
+        # Reset RRT
+        self.rrt = None
+        self.goal_selected = False
+        self.last_node_count = 1
+        
+        # Remove goal point
+        if self.goal_point:
+            self.goal_point.remove()
+            self.goal_point = None
+        
+        # Clear path
+        if self.path_line:
+            self.path_line.remove()
+            self.path_line = None
+        
+        # Clear iteration text
+        if self.iter_text:
+            self.iter_text.remove()
+            self.iter_text = None
+        
+        # Reset title
+        self.ax.set_title('RRT Path Planning Visualization - Click to set goal', fontsize=16, fontweight='bold')
+        
+        # Reset goal selection flag
+        self.goal_selected = False
+        
+        # Redraw
+        self.fig.canvas.draw()
+        
+        print("\n" + "="*50)
+        print("Reset complete! Click on the plot to set a new goal.")
+        print("="*50)
+        
+        # Reconnect click handler for new goal selection
+        self.setup_goal_click_handler()
+    
+    def clear_tree(self):
+        """Clear all tree visualization elements"""
+        # Clear tree lines
+        for line in self.tree_lines.values():
+            line.remove()
+        self.tree_lines.clear()
+        
+        # Clear node points
+        for point in self.node_points:
+            point.remove()
+        self.node_points.clear()
+    
+    def setup_reset_button(self):
+        """Create and setup the reset button"""
+        # Create button axes (position: left, bottom, width, height in figure coordinates)
+        ax_reset = plt.axes([0.02, 0.02, 0.1, 0.04])
+        self.reset_button = Button(ax_reset, 'Reset', color='lightcoral', hovercolor='red')
+        
+        def reset_callback(event):
+            if not self.running:
+                self.reset()
+                # Reconnect click handler for new goal selection
+                self.setup_goal_click_handler()
+        
+        self.reset_button.on_clicked(reset_callback)
+    
+    def setup_goal_click_handler(self):
+        """Setup click handler for goal selection"""
+        # Disconnect any existing click handler
+        if self.click_handler is not None:
+            self.fig.canvas.mpl_disconnect(self.click_handler)
+        
+        def on_click(event):
+            if event.inaxes != self.ax:
+                return
+            
+            # Check if click is within bounds
+            x, y = event.xdata, event.ydata
+            if not (self.bounds[0] <= x <= self.bounds[1] and 
+                    self.bounds[2] <= y <= self.bounds[3]):
+                print(f"Click is outside bounds. Please click within the workspace.")
+                return
+            
+            # Set goal position
+            self.goal_pos = (x, y)
+            
+            # Remove old goal if exists
+            if self.goal_point:
+                self.goal_point.remove()
+            
+            # Draw new goal
+            self.goal_point, = self.ax.plot(x, y, 'ro', markersize=15, label='Goal', zorder=5)
+            self.ax.legend(loc='upper right')
+            
+            # Update title
+            self.ax.set_title('RRT Path Planning Visualization', fontsize=16, fontweight='bold')
+            
+            # Initialize RRT with selected goal
+            self.rrt = RRT(self.start_pos, self.goal_pos, self.bounds, 
+                          self.obstacles, self.step_size, self.goal_threshold)
+            
+            self.goal_selected = True
+            self.fig.canvas.draw()
+            
+            print(f"Goal set at ({x:.2f}, {y:.2f})")
+            print("Starting RRT algorithm...")
+            
+            # Disconnect click handler
+            self.fig.canvas.mpl_disconnect(self.click_handler)
+            self.click_handler = None
+            
+            # Run algorithm
+            self.run_algorithm()
+        
+        # Connect click handler
+        self.click_handler = self.fig.canvas.mpl_connect('button_press_event', on_click)
+    
+    def wait_for_goal_selection(self):
+        """Wait for user to click on the plot to set the goal"""
+        print("Click on the plot to set the goal position...")
+        self.goal_selected = False
+        self.setup_goal_click_handler()
+        
+        # Wait for goal selection (non-blocking with pause)
+        plt.show(block=False)
+        while not self.goal_selected:
+            plt.pause(0.1)
+    
+    def run_algorithm(self):
+        """Run the RRT algorithm"""
+        self.running = True
+        success = self.update_visualization(
+            max_iterations=30000,
+            animate=True,
+            update_frequency=1
+        )
+        self.running = False
+        
+        if success:
+            print("\n✓ Visualization complete!")
+        else:
+            print("\n✗ Visualization complete (goal not reached)")
+    
     def update_visualization(self, max_iterations=5000, animate=True, update_frequency=1):
         """Run RRT algorithm and update visualization in real-time"""
+        if self.rrt is None:
+            raise ValueError("RRT not initialized. Please select a goal first using wait_for_goal_selection().")
+        
         iterations = 0
         
         # Initialize iteration counter text
@@ -273,7 +437,7 @@ class RRTVisualizer:
             print("Try increasing max_iterations or adjusting parameters")
         
         plt.draw()
-        plt.ioff()  # Turn off interactive mode
+        # Keep interactive mode on for reset button
         return self.rrt.goal_reached
     
     def add_new_nodes(self):
@@ -323,8 +487,9 @@ def main():
     # Define workspace bounds (x_min, x_max, y_min, y_max)
     bounds = (0, 100, 0, 100)
     
-    # Define start and goal positions
+    # Define start position
     start = (10, 10)
+    # Default goal (will be replaced by user click)
     goal = (90, 90)
     
     # Define obstacles (optional)
@@ -339,29 +504,26 @@ def main():
     # Create visualizer
     visualizer = RRTVisualizer(
         start=start,
-        goal=goal,
+        goal=goal,  # Default goal, will be replaced by user click
         bounds=bounds,
         obstacles=obstacles,
         step_size=5,
         goal_threshold=10
     )
     
+    # Setup reset button
+    visualizer.setup_reset_button()
+    
+    # Wait for user to click and set the goal
+    visualizer.wait_for_goal_selection()
+    
     # Run RRT and visualize
-    print("Starting RRT path planning...")
     print("Growing tree...")
+    visualizer.run_algorithm()
     
-    success = visualizer.update_visualization(
-        max_iterations=5000,
-        animate=True,
-        update_frequency=1  # Update every iteration for real-time visualization
-    )
-    
-    if success:
-        print("\n✓ Visualization complete!")
-    else:
-        print("\n✗ Visualization complete (goal not reached)")
-    
-    plt.show()
+    # Keep window open for reset button
+    print("\nYou can click the 'Reset' button to run again with a new goal.")
+    plt.show(block=True)  # Keep window open
 
 
 if __name__ == "__main__":
